@@ -65,7 +65,9 @@ cmd_auth() {
   local username token
   case "${1:-browser}" in
     browser)
-      (($# == 0 || ($# == 1 && $1 == browser))) || die 'Usage: bgt auth [browser|set]'
+      if ! { (($# == 0)) || { (($# == 1)) && [[ $1 == browser ]]; }; }; then
+        die 'Usage: bgt auth [browser|set]'
+      fi
       need gh "Browser login requires GitHub CLI; install gh or use 'bgt auth set'."
       gh auth login -h github.com -p https -w --skip-ssh-key
       username=$(gh api user --jq .login)
@@ -84,8 +86,9 @@ cmd_auth() {
   esac
 }
 ensure_identity() {
-  git config user.name >/dev/null 2>&1 && git config user.email >/dev/null 2>&1 || \
-    die "Git author identity is missing. Run: git config --global user.name 'Your Name' && git config --global user.email 'you@example.com'"
+  if ! git config user.name >/dev/null 2>&1 || ! git config user.email >/dev/null 2>&1; then
+    die "Git author identity is missing. Configure it declaratively in Home Manager."
+  fi
 }
 
 
@@ -115,8 +118,9 @@ cmd_create() {
   git add README.md
   git commit -m 'Initial commit'
   local private=true; [[ $visibility == --public ]] && private=false
+  description=${description//\\/\\\\}; description=${description//\"/\\\"}
   curl -fsS -H "Authorization: Bearer $BGT_TOKEN" -H 'Accept: application/vnd.github+json' \
-    -d "{\"name\":\"$name\",\"private\":$private}" https://api.github.com/user/repos >/dev/null
+    -d "{\"name\":\"$name\",\"description\":\"$description\",\"private\":$private}" https://api.github.com/user/repos >/dev/null
   git remote add origin "https://github.com/$BGT_USERNAME/$name.git"
   with_git_auth git push -u origin HEAD
   info "Created and pushed $BGT_USERNAME/$name."
@@ -125,7 +129,8 @@ cmd_create() {
 cmd_clone() {
   need git "Install Git (nixpkgs#git) first."
   (($# >= 1 && $# <= 2)) || die "Usage: bgt clone <owner/repo> [folder]"
-  local repository=$1 folder=${2:-} url="https://github.com/$1.git"
+  local repository=$1 folder=${2:-}
+  local url="https://github.com/$repository.git"
   if [[ -n $folder ]]; then with_git_auth git clone "$url" "$folder"; else with_git_auth git clone "$url"; fi
 }
 
