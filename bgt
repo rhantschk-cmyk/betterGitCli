@@ -3,6 +3,8 @@
 set -euo pipefail
 
 PROGRAM="bgt"
+CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/bgt"
+CONFIG_FILE="$CONFIG_DIR/credentials"
 
 die() { printf '%s\n' "${PROGRAM}: $*" >&2; exit 1; }
 info() { printf '%s\n' "${PROGRAM}: $*"; }
@@ -31,32 +33,42 @@ Everyday commands:
       Check Git, GitHub authentication and recommended configuration.
 
 Setup:
-  bgt setup
-      Authenticate with GitHub and configure Git to use gh as its credential helper.
+  bgt auth set
+      Save GitHub username and token in bgt's own private config.
 
 Run 'bgt <command> --help' where applicable.  Secrets are never accepted as command
-arguments: GitHub stores the OAuth token in its own secure credential store.
+arguments: bgt stores them only in ~/.config/bgt/credentials (mode 0600).
 EOF
 }
 
 repo_root() { git rev-parse --show-toplevel 2>/dev/null || die "not inside a Git repository"; }
-ensure_gh_auth() {
-  need gh "Install GitHub CLI (nixpkgs#gh) first."
-  gh auth status -h github.com >/dev/null 2>&1 || die "not signed in. Run 'bgt setup'."
+with_git_auth() {
+  load_credentials
+  local basic
+  basic=$(printf '%s:%s' "$BGT_USERNAME" "$BGT_TOKEN" | base64 -w 0)
+  GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=http.extraHeader \
+    GIT_CONFIG_VALUE_0="Authorization: Basic $basic" "$@"
+}
+load_credentials() {
+  [[ -r $CONFIG_FILE ]] || die "not authenticated. Run 'bgt auth set'."
+  BGT_USERNAME=$(sed -n 's/^username=//p' "$CONFIG_FILE" | head -n1)
+  BGT_TOKEN=$(sed -n 's/^token=//p' "$CONFIG_FILE" | head -n1)
+  [[ -n $BGT_USERNAME && -n $BGT_TOKEN ]] || die "invalid bgt credentials file"
+}
+cmd_auth() {
+  [[ ${1:-} == set && $# == 1 ]] || die 'Usage: bgt auth set'
+  local username token
+  read -r -p 'GitHub username: ' username
+  read -r -s -p 'GitHub token: ' token; printf '\n'
+  [[ -n $username && -n $token ]] || die 'username and token are required'
+  ( umask 077; mkdir -p "$CONFIG_DIR"; printf 'username=%s\ntoken=%s\n' "$username" "$token" > "$CONFIG_FILE" )
+  info "credentials saved in $CONFIG_FILE"
 }
 ensure_identity() {
   git config user.name >/dev/null 2>&1 && git config user.email >/dev/null 2>&1 || \
     die "Git author identity is missing. Run: git config --global user.name 'Your Name' && git config --global user.email 'you@example.com'"
 }
 
-cmd_setup() {
-  need git "Install Git (nixpkgs#git) first."
-  need gh "Install GitHub CLI (nixpkgs#gh) first."
-  info "Opening GitHub login; choose HTTPS when asked for the preferred Git protocol."
-  gh auth login -h github.com -p https -w
-  gh auth setup-git
-  info "GitHub authentication is ready. Tokens remain managed by gh, not this CLI."
-}
 
 cmd_create() {
   local name='' visibility='--private' description='' arg
@@ -73,7 +85,7 @@ cmd_create() {
     esac
   done
   [[ -n $name ]] || die "repository name is required"
-  ensure_gh_auth
+  load_credentials
   need git "Install Git (nixpkgs#git) first."
   ensure_identity
   [[ ! -e .git ]] || die "this folder is already a Git repository; create an empty folder first"
@@ -83,16 +95,19 @@ cmd_create() {
   printf '# %s\n' "$name" > README.md
   git add README.md
   git commit -m 'Initial commit'
-  local gh_args=(repo create "$name" "$visibility" --source=. --remote=origin --push)
-  [[ -n $description ]] && gh_args+=(--description "$description")
-  gh "${gh_args[@]}"
-  info "Created and pushed $(gh repo view --json nameWithOwner -q .nameWithOwner)."
+  local private=true; [[ $visibility == --public ]] && private=false
+  curl -fsS -H "Authorization: Bearer $BGT_TOKEN" -H 'Accept: application/vnd.github+json' \
+    -d "{\"name\":\"$name\",\"private\":$private}" https://api.github.com/user/repos >/dev/null
+  git remote add origin "https://github.com/$BGT_USERNAME/$name.git"
+  with_git_auth git push -u origin HEAD
+  info "Created and pushed $BGT_USERNAME/$name."
 }
 
 cmd_clone() {
-  ensure_gh_auth
+  need git "Install Git (nixpkgs#git) first."
   (($# >= 1 && $# <= 2)) || die "Usage: bgt clone <owner/repo> [folder]"
-  gh repo clone "$@"
+  local repository=$1 folder=${2:-} url="https://github.com/$1.git"
+  if [[ -n $folder ]]; then with_git_auth git clone "$url" "$folder"; else with_git_auth git clone "$url"; fi
 }
 
 cmd_save() {
@@ -103,58 +118,50 @@ cmd_save() {
   if (($#)); then git add -- "$@"; else git add -A; fi
   git diff --cached --quiet && die "nothing staged to commit"
   git commit -m "$message"
-  git push -u origin HEAD
+  with_git_auth git push -u origin HEAD
 }
 
 cmd_sync() {
   repo_root >/dev/null
-  git pull --rebase
-  git push
+  with_git_auth git pull --rebase
+  with_git_auth git push
 }
 
 cmd_pr() {
-  local draft=0 title=''
+  local draft=false title=''
   while (($#)); do
     case "$1" in
-      --draft) draft=1 ;;
+      --draft) draft=true ;;
       -h|--help) printf '%s\n' 'Usage: bgt pr [title] [--draft]'; return ;;
       -*) die "unknown option: $1" ;;
       *) [[ -z $title ]] || die "only one title is allowed"; title=$1 ;;
     esac
     shift
   done
-  ensure_gh_auth
   repo_root >/dev/null
-  local args=(pr create --web)
-  [[ -n $title ]] && args+=(--title "$title" --fill)
-  ((draft)) && args+=(--draft)
-  gh "${args[@]}"
+  load_credentials
+  local branch repo
+  branch=$(git branch --show-current)
+  repo=$(git remote get-url origin | sed -E 's#.*github.com[:/]([^/]+/[^/]+)(\.git)?#\1#')
+  [[ -n $title ]] || title="$branch"
+  curl -fsS -H "Authorization: Bearer $BGT_TOKEN" -H 'Accept: application/vnd.github+json' \
+    -d "{\"title\":\"$title\",\"head\":\"$branch\",\"base\":\"main\",\"draft\":$draft}" \
+    "https://api.github.com/repos/$repo/pulls"
 }
 
-cmd_open() { ensure_gh_auth; repo_root >/dev/null; gh repo view --web; }
-cmd_status() { ensure_gh_auth; repo_root >/dev/null; git status -sb; gh pr status || true; }
+cmd_open() { repo_root >/dev/null; xdg-open "$(git remote get-url origin | sed 's|\.git$||')"; }
+cmd_status() { repo_root >/dev/null; git status -sb; }
 
 cmd_doctor() {
   need git "Install Git (nixpkgs#git) first."
-  need gh "Install GitHub CLI (nixpkgs#gh) first."
   git --version
-  gh --version | head -n 1
-  if gh auth status -h github.com; then
-    info "GitHub authentication: OK"
-  else
-    info "GitHub authentication: missing (run 'bgt setup')"
-    return 1
-  fi
-  if git config --global --get credential.https://github.com.helper | grep -q '!.*gh auth git-credential'; then
-    info "Git credential helper: OK"
-  else
-    info "Git credential helper: not configured (run 'gh auth setup-git')"
-  fi
+  load_credentials
+  info "bgt authentication: OK; no Git credential helper is used."
 }
 
 case "${1:-help}" in
+  auth) shift; cmd_auth "$@" ;;
   help|-h|--help) usage ;;
-  setup) shift; (($# == 0)) || die 'Usage: bgt setup'; cmd_setup ;;
   create) shift; cmd_create "$@" ;;
   clone) shift; cmd_clone "$@" ;;
   save) shift; cmd_save "$@" ;;

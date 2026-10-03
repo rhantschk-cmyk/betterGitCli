@@ -1,18 +1,26 @@
 # Better Git CLI (`bgt`)
 
-`bgt` turns the repetitive GitHub flow into a few predictable commands while
-delegating authentication to the official GitHub CLI (`gh`). It never stores or
-accepts a GitHub token itself.
+`bgt` turns the repetitive GitHub flow into a few predictable commands. It owns
+its GitHub authentication and never changes Git credential configuration.
 
 ## First-time setup
 
-1. Revoke any token that has been pasted into a shell, chat or source file, and
-   create a new one only if you really need a personal-access token. The normal
-   `gh` browser login is preferable.
-2. Install `gh` and `git` in NixOS, then install this CLI (see below).
-3. Run `bgt setup`. It opens GitHub's browser login and makes Git ask `gh` for
-   HTTPS credentials. Subsequent `git push`, `pull`, and all `bgt` commands use
-   that login without prompting for a username or token.
+1. Revoke any token that has been pasted into a shell, chat or source file.
+2. Install this CLI (see below), then run `bgt auth set` and paste a newly
+   created GitHub token when prompted.
+
+The username and token are stored only in `~/.config/bgt/credentials` with mode
+`0600`. They are never written to Git configuration or to the repository.
+
+### Why this works with read-only Home Manager Git config
+
+`bgt` never writes Git configuration, does not install a Git credential helper,
+and does not use `GIT_ASKPASS`. For its own HTTPS clone, pull, and push
+operations, it supplies an in-memory HTTP authorization header derived from its
+own config. The token is never stored in `.git` or `~/.gitconfig`.
+
+Plain `git push` remains intentionally unmanaged; use `bgt save` or `bgt sync`
+when you want bgt to authenticate Git for you.
 
 ## Commands
 
