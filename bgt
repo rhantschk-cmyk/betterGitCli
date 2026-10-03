@@ -1,0 +1,167 @@
+#!/usr/bin/env bash
+# Better Git: small, opinionated shortcuts around git and the GitHub CLI.
+set -euo pipefail
+
+PROGRAM="bgt"
+
+die() { printf '%s\n' "${PROGRAM}: $*" >&2; exit 1; }
+info() { printf '%s\n' "${PROGRAM}: $*"; }
+need() { command -v "$1" >/dev/null 2>&1 || die "'$1' is required. $2"; }
+
+usage() {
+  cat <<'EOF'
+Usage: bgt <command> [arguments]
+
+Everyday commands:
+  create <name> [--private|--public] [--description TEXT]
+      Create a GitHub repository, initialise this folder, add README, commit and push.
+  clone <owner/repo> [folder]
+      Clone a GitHub repository using the authenticated GitHub CLI.
+  save <message> [files...]
+      Stage the given files (or everything), commit, then push the current branch.
+  sync
+      Pull with rebase and push the current branch.
+  pr [title] [--draft]
+      Create a pull request for the current branch (or open GitHub's interactive flow).
+  open
+      Open the current repository in the browser.
+  status
+      Show compact Git status plus GitHub pull-request status.
+  doctor
+      Check Git, GitHub authentication and recommended configuration.
+
+Setup:
+  bgt setup
+      Authenticate with GitHub and configure Git to use gh as its credential helper.
+
+Run 'bgt <command> --help' where applicable.  Secrets are never accepted as command
+arguments: GitHub stores the OAuth token in its own secure credential store.
+EOF
+}
+
+repo_root() { git rev-parse --show-toplevel 2>/dev/null || die "not inside a Git repository"; }
+ensure_gh_auth() {
+  need gh "Install GitHub CLI (nixpkgs#gh) first."
+  gh auth status -h github.com >/dev/null 2>&1 || die "not signed in. Run 'bgt setup'."
+}
+ensure_identity() {
+  git config user.name >/dev/null 2>&1 && git config user.email >/dev/null 2>&1 || \
+    die "Git author identity is missing. Run: git config --global user.name 'Your Name' && git config --global user.email 'you@example.com'"
+}
+
+cmd_setup() {
+  need git "Install Git (nixpkgs#git) first."
+  need gh "Install GitHub CLI (nixpkgs#gh) first."
+  info "Opening GitHub login; choose HTTPS when asked for the preferred Git protocol."
+  gh auth login -h github.com -p https -w
+  gh auth setup-git
+  info "GitHub authentication is ready. Tokens remain managed by gh, not this CLI."
+}
+
+cmd_create() {
+  local name='' visibility='--private' description='' arg
+  while (($#)); do
+    arg=$1; shift
+    case "$arg" in
+      --public|--private) visibility=$arg ;;
+      --description)
+        (($#)) || die "--description needs text"
+        description=$1; shift ;;
+      -h|--help) printf '%s\n' 'Usage: bgt create <name> [--private|--public] [--description TEXT]'; return ;;
+      -*) die "unknown option: $arg" ;;
+      *) [[ -z $name ]] || die "only one repository name is allowed"; name=$arg ;;
+    esac
+  done
+  [[ -n $name ]] || die "repository name is required"
+  ensure_gh_auth
+  need git "Install Git (nixpkgs#git) first."
+  ensure_identity
+  [[ ! -e .git ]] || die "this folder is already a Git repository; create an empty folder first"
+  [[ -z "$(find . -mindepth 1 -maxdepth 1 -print -quit)" ]] || die "create must run in an empty folder"
+
+  git init -b main
+  printf '# %s\n' "$name" > README.md
+  git add README.md
+  git commit -m 'Initial commit'
+  local gh_args=(repo create "$name" "$visibility" --source=. --remote=origin --push)
+  [[ -n $description ]] && gh_args+=(--description "$description")
+  gh "${gh_args[@]}"
+  info "Created and pushed $(gh repo view --json nameWithOwner -q .nameWithOwner)."
+}
+
+cmd_clone() {
+  ensure_gh_auth
+  (($# >= 1 && $# <= 2)) || die "Usage: bgt clone <owner/repo> [folder]"
+  gh repo clone "$@"
+}
+
+cmd_save() {
+  repo_root >/dev/null
+  ensure_identity
+  (($# >= 1)) || die "Usage: bgt save <message> [files...]"
+  local message=$1; shift
+  if (($#)); then git add -- "$@"; else git add -A; fi
+  git diff --cached --quiet && die "nothing staged to commit"
+  git commit -m "$message"
+  git push -u origin HEAD
+}
+
+cmd_sync() {
+  repo_root >/dev/null
+  git pull --rebase
+  git push
+}
+
+cmd_pr() {
+  local draft=0 title=''
+  while (($#)); do
+    case "$1" in
+      --draft) draft=1 ;;
+      -h|--help) printf '%s\n' 'Usage: bgt pr [title] [--draft]'; return ;;
+      -*) die "unknown option: $1" ;;
+      *) [[ -z $title ]] || die "only one title is allowed"; title=$1 ;;
+    esac
+    shift
+  done
+  ensure_gh_auth
+  repo_root >/dev/null
+  local args=(pr create --web)
+  [[ -n $title ]] && args+=(--title "$title" --fill)
+  ((draft)) && args+=(--draft)
+  gh "${args[@]}"
+}
+
+cmd_open() { ensure_gh_auth; repo_root >/dev/null; gh repo view --web; }
+cmd_status() { ensure_gh_auth; repo_root >/dev/null; git status -sb; gh pr status || true; }
+
+cmd_doctor() {
+  need git "Install Git (nixpkgs#git) first."
+  need gh "Install GitHub CLI (nixpkgs#gh) first."
+  git --version
+  gh --version | head -n 1
+  if gh auth status -h github.com; then
+    info "GitHub authentication: OK"
+  else
+    info "GitHub authentication: missing (run 'bgt setup')"
+    return 1
+  fi
+  if git config --global --get credential.https://github.com.helper | grep -q '!.*gh auth git-credential'; then
+    info "Git credential helper: OK"
+  else
+    info "Git credential helper: not configured (run 'gh auth setup-git')"
+  fi
+}
+
+case "${1:-help}" in
+  help|-h|--help) usage ;;
+  setup) shift; (($# == 0)) || die 'Usage: bgt setup'; cmd_setup ;;
+  create) shift; cmd_create "$@" ;;
+  clone) shift; cmd_clone "$@" ;;
+  save) shift; cmd_save "$@" ;;
+  sync) shift; (($# == 0)) || die 'Usage: bgt sync'; cmd_sync ;;
+  pr) shift; cmd_pr "$@" ;;
+  open) shift; (($# == 0)) || die 'Usage: bgt open'; cmd_open ;;
+  status) shift; (($# == 0)) || die 'Usage: bgt status'; cmd_status ;;
+  doctor) shift; (($# == 0)) || die 'Usage: bgt doctor'; cmd_doctor ;;
+  *) die "unknown command '$1' (run 'bgt help')" ;;
+esac
