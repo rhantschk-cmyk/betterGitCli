@@ -24,5 +24,25 @@
           program = "${self.packages.${system}.default}/bin/bgt";
         };
       });
+
+      homeModules.default = { config, lib, pkgs, ... }:
+        let
+          cfg = config.programs.bgt;
+        in {
+          options.programs.bgt = {
+            enable = lib.mkEnableOption "Better Git CLI";
+            browserLogin = lib.mkOption {
+              type = lib.types.bool;
+              default = true;
+              description = "Install GitHub CLI for the optional bgt auth browser flow.";
+            };
+          };
+
+          config = lib.mkIf cfg.enable {
+            home.packages = [
+              self.packages.${pkgs.stdenv.hostPlatform.system}.default
+            ] ++ lib.optional cfg.browserLogin pkgs.gh;
+          };
+        };
     };
 }

@@ -65,7 +65,18 @@ sudo nixos-rebuild switch --flake /path/to/your/nixos-config
 ```
 
 For a per-user but still persistent installation with Home Manager, put the
-same package in `home.packages`. For a quick one-off run before installation:
+same package in `home.packages`, or import the included module:
+
+```nix
+imports = [ inputs.better-git-cli.homeModules.default ];
+
+programs.bgt = {
+  enable = true;
+  browserLogin = true; # installs gh for `bgt auth`; default is true
+};
+```
+
+For a quick one-off run before installation:
 
 ```bash
 nix run github:rhantschk-cmyk/betterGitCli -- doctor
