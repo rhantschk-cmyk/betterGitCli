@@ -13,7 +13,7 @@
         in {
           default = pkgs.writeShellApplication {
             name = "bgt";
-            runtimeInputs = [ pkgs.git pkgs.curl pkgs.coreutils ];
+            runtimeInputs = [ pkgs.git pkgs.curl pkgs.coreutils pkgs.zip ];
             text = builtins.readFile ./bgt;
           };
         });

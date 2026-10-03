@@ -29,6 +29,8 @@ Everyday commands:
       Open the current repository in the browser.
   status
       Show compact Git status plus GitHub pull-request status.
+  zip
+      Create a timestamped ZIP archive in the repository root (without .git).
   doctor
       Check Git, GitHub authentication and recommended configuration.
 
@@ -175,6 +177,19 @@ cmd_pr() {
 
 cmd_open() { repo_root >/dev/null; xdg-open "$(git remote get-url origin | sed 's|\.git$||')"; }
 cmd_status() { repo_root >/dev/null; git status -sb; }
+cmd_zip() {
+  need zip "Install zip first."
+  local root name stamp archive
+  root=$(repo_root)
+  name=$(basename "$root")
+  stamp=$(date +%Y%m%d-%H%M%S)
+  archive="$root/$name-$stamp.zip"
+  (
+    cd "$root"
+    zip -r -q "$archive" . -x '.git/*' -x '*.zip'
+  )
+  info "Created $archive"
+}
 
 cmd_doctor() {
   need git "Install Git (nixpkgs#git) first."
@@ -193,6 +208,7 @@ case "${1:-help}" in
   pr) shift; cmd_pr "$@" ;;
   open) shift; (($# == 0)) || die 'Usage: bgt open'; cmd_open ;;
   status) shift; (($# == 0)) || die 'Usage: bgt status'; cmd_status ;;
+  zip) shift; (($# == 0)) || die 'Usage: bgt zip'; cmd_zip ;;
   doctor) shift; (($# == 0)) || die 'Usage: bgt doctor'; cmd_doctor ;;
   *) die "unknown command '$1' (run 'bgt help')" ;;
 esac

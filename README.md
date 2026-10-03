@@ -36,6 +36,7 @@ bgt save "Only docs" README.md docs/
 bgt sync                                  # pull --rebase, then push
 bgt pr "Add a useful feature" --draft
 bgt status
+bgt zip                              # archive in the repository root, without .git
 bgt open
 bgt doctor
 ```
