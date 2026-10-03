@@ -18,7 +18,7 @@ Everyday commands:
   create <name> [--private|--public] [--description TEXT]
       Create a GitHub repository, initialise this folder, add README, commit and push.
   clone <owner/repo> [folder]
-      Clone a GitHub repository using the authenticated GitHub CLI.
+      Clone a GitHub repository using bgt's authenticated HTTPS transport.
   save <message> [files...]
       Stage the given files (or everything), commit, then push the current branch.
   sync
@@ -33,8 +33,8 @@ Everyday commands:
       Check Git, GitHub authentication and recommended configuration.
 
 Setup:
-  bgt auth set
-      Save GitHub username and token in bgt's own private config.
+  bgt auth
+      Browser login (uses gh temporarily); bgt auth set accepts a token manually.
 
 Run 'bgt <command> --help' where applicable.  Secrets are never accepted as command
 arguments: bgt stores them only in ~/.config/bgt/credentials (mode 0600).
@@ -45,7 +45,7 @@ repo_root() { git rev-parse --show-toplevel 2>/dev/null || die "not inside a Git
 with_git_auth() {
   load_credentials
   local basic
-  basic=$(printf '%s:%s' "$BGT_USERNAME" "$BGT_TOKEN" | base64 -w 0)
+  basic=$(printf '%s:%s' "$BGT_USERNAME" "$BGT_TOKEN" | base64 | tr -d '\n')
   GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=http.extraHeader \
     GIT_CONFIG_VALUE_0="Authorization: Basic $basic" "$@"
 }
@@ -55,14 +55,33 @@ load_credentials() {
   BGT_TOKEN=$(sed -n 's/^token=//p' "$CONFIG_FILE" | head -n1)
   [[ -n $BGT_USERNAME && -n $BGT_TOKEN ]] || die "invalid bgt credentials file"
 }
-cmd_auth() {
-  [[ ${1:-} == set && $# == 1 ]] || die 'Usage: bgt auth set'
-  local username token
-  read -r -p 'GitHub username: ' username
-  read -r -s -p 'GitHub token: ' token; printf '\n'
+save_credentials() {
+  local username=$1 token=$2
   [[ -n $username && -n $token ]] || die 'username and token are required'
   ( umask 077; mkdir -p "$CONFIG_DIR"; printf 'username=%s\ntoken=%s\n' "$username" "$token" > "$CONFIG_FILE" )
   info "credentials saved in $CONFIG_FILE"
+}
+cmd_auth() {
+  local username token
+  case "${1:-browser}" in
+    browser)
+      (($# == 0 || ($# == 1 && $1 == browser))) || die 'Usage: bgt auth [browser|set]'
+      need gh "Browser login requires GitHub CLI; install gh or use 'bgt auth set'."
+      gh auth login -h github.com -p https -w --skip-ssh-key
+      username=$(gh api user --jq .login)
+      token=$(gh auth token -h github.com)
+      save_credentials "$username" "$token"
+      gh auth logout -h github.com -u "$username" >/dev/null 2>&1 || true
+      info "Browser login imported into bgt; no Git credential helper was configured."
+      ;;
+    set)
+      (($# == 1)) || die 'Usage: bgt auth set'
+  read -r -p 'GitHub username: ' username
+  read -r -s -p 'GitHub token: ' token; printf '\n'
+      save_credentials "$username" "$token"
+      ;;
+    *) die 'Usage: bgt auth [browser|set]' ;;
+  esac
 }
 ensure_identity() {
   git config user.name >/dev/null 2>&1 && git config user.email >/dev/null 2>&1 || \
